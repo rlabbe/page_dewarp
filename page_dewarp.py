@@ -16,16 +16,17 @@ import cv2
 from PIL import Image
 import numpy as np
 import scipy.optimize
+import matplotlib.pyplot as plt
 
 # for some reason pylint complains about cv2 members being undefined :(
 # pylint: disable=E1101
 
-PAGE_MARGIN_X = 50       # reduced px to ignore near L/R edge
-PAGE_MARGIN_Y = 20       # reduced px to ignore near T/B edge
+PAGE_MARGIN_X = 0       # reduced px to ignore near L/R edge
+PAGE_MARGIN_Y = 0       # reduced px to ignore near T/B edge
 
 OUTPUT_ZOOM = 1.0        # how much to zoom output relative to *original* image
 OUTPUT_DPI = 300         # just affects stated DPI of PNG, not appearance
-REMAP_DECIMATE = 16      # downscaling factor for remapping image
+REMAP_DECIMATE = 1      # downscaling factor for remapping image
 
 ADAPTIVE_WINSZ = 55      # window size for adaptive threshold in reduced px
 
@@ -47,10 +48,8 @@ SPAN_MIN_WIDTH = 30      # minimum reduced px width for span
 SPAN_PX_PER_STEP = 20    # reduced px spacing for sampling along spans
 FOCAL_LENGTH = 1.2       # normalized focal length of camera
 
-DEBUG_LEVEL = 0          # 0=none, 1=some, 2=lots, 3=all
-DEBUG_OUTPUT = 'file'    # file, screen, both
-
 WINDOW_NAME = 'Dewarp'   # Window name for visualization
+DEBUG_LEVEL = 3
 
 # nice color palette for visualizing contours, etc.
 CCOLORS = [
@@ -87,30 +86,25 @@ K = np.array([
     [0, 0, 1]], dtype=np.float32)
 
 
-def debug_show(name, step, text, display):
+def debug_show(step, text, display):
 
-    if DEBUG_OUTPUT != 'screen':
-        filetext = text.replace(' ', '_')
-        outfile = name + '_debug_' + str(step) + '_' + filetext + '.png'
-        cv2.imwrite(outfile, display)
 
-    if DEBUG_OUTPUT != 'file':
+    imshow(display, text)
+    '''image = display.copy()
+    height = image.shape[0]
 
-        image = display.copy()
-        height = image.shape[0]
+    cv2.putText(image, text, (16, height-16),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                (0, 0, 0), 3, cv2.LINE_AA)
 
-        cv2.putText(image, text, (16, height-16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0,
-                    (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(image, text, (16, height-16),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                (255, 255, 255), 1, cv2.LINE_AA)
 
-        cv2.putText(image, text, (16, height-16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0,
-                    (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.imshow(WINDOW_NAME, image)
 
-        cv2.imshow(WINDOW_NAME, image)
-
-        while cv2.waitKey(5) < 0:
-            pass
+    while cv2.waitKey(5) < 0:
+        pass'''
 
 
 def round_nearest_multiple(i, factor):
@@ -278,7 +272,7 @@ def get_page_extents(small):
     return page, outline
 
 
-def get_mask(name, small, pagemask, masktype):
+def get_mask(small, pagemask, masktype):
 
     sgray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
 
@@ -288,20 +282,8 @@ def get_mask(name, small, pagemask, masktype):
                                      cv2.THRESH_BINARY_INV,
                                      ADAPTIVE_WINSZ,
                                      25)
-
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.1, 'thresholded', mask)
-
         mask = cv2.dilate(mask, box(9, 1))
-
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.2, 'dilated', mask)
-
         mask = cv2.erode(mask, box(1, 3))
-
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.3, 'eroded', mask)
-
     else:
 
         mask = cv2.adaptiveThreshold(sgray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
@@ -309,19 +291,8 @@ def get_mask(name, small, pagemask, masktype):
                                      ADAPTIVE_WINSZ,
                                      7)
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.4, 'thresholded', mask)
-
         mask = cv2.erode(mask, box(3, 1), iterations=3)
-
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.5, 'eroded', mask)
-
         mask = cv2.dilate(mask, box(8, 2))
-
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.6, 'dilated', mask)
-
     return np.minimum(mask, pagemask)
 
 
@@ -442,12 +413,11 @@ def make_tight_mask(contour, xmin, ymin, width, height):
     return tight_mask
 
 
-def get_contours(name, small, pagemask, masktype):
+def get_contours(small, pagemask, masktype):
 
-    mask = get_mask(name, small, pagemask, masktype)
+    mask = get_mask(small, pagemask, masktype)
 
-    _, contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                      cv2.CHAIN_APPROX_NONE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
     contours_out = []
 
@@ -469,12 +439,12 @@ def get_contours(name, small, pagemask, masktype):
         contours_out.append(ContourInfo(contour, rect, tight_mask))
 
     if DEBUG_LEVEL >= 2:
-        visualize_contours(name, small, contours_out)
+        visualize_contours(small, contours_out)
 
     return contours_out
 
 
-def assemble_spans(name, small, pagemask, cinfo_list):
+def assemble_spans(small, pagemask, cinfo_list):
 
     # sort list
     cinfo_list = sorted(cinfo_list, key=lambda cinfo: cinfo.rect[1])
@@ -532,7 +502,7 @@ def assemble_spans(name, small, pagemask, cinfo_list):
             spans.append(cur_span)
 
     if DEBUG_LEVEL >= 2:
-        visualize_spans(name, small, pagemask, spans)
+        visualize_spans(small, pagemask, spans)
 
     return spans
 
@@ -554,7 +524,7 @@ def sample_spans(shape, spans):
             xmin, ymin = cinfo.rect[:2]
 
             step = SPAN_PX_PER_STEP
-            start = ((len(means)-1) % step) / 2
+            start = ((len(means)-1) % step) // 2
 
             contour_points += [(x+xmin, means[x]+ymin)
                                for x in range(start, len(means), step)]
@@ -569,7 +539,7 @@ def sample_spans(shape, spans):
     return span_points
 
 
-def keypoints_from_samples(name, small, pagemask, page_outline,
+def keypoints_from_samples(small, pagemask, page_outline,
                            span_points):
 
     all_evecs = np.array([[0.0, 0.0]])
@@ -625,12 +595,12 @@ def keypoints_from_samples(name, small, pagemask, page_outline,
         xcoords.append(px_coords - px0)
 
     if DEBUG_LEVEL >= 2:
-        visualize_span_points(name, small, span_points, corners)
+        visualize_span_points(small, span_points, corners)
 
     return corners, np.array(ycoords), xcoords
 
 
-def visualize_contours(name, small, cinfo_list):
+def visualize_contours(small, cinfo_list):
 
     regions = np.zeros_like(small)
 
@@ -654,10 +624,10 @@ def visualize_contours(name, small, cinfo_list):
         cv2.line(display, fltp(cinfo.point0), fltp(cinfo.point1),
                  (255, 255, 255), 1, cv2.LINE_AA)
 
-    debug_show(name, 1, 'contours', display)
+    debug_show(1, 'contours', display)
 
 
-def visualize_spans(name, small, pagemask, spans):
+def visualize_spans(small, pagemask, spans):
 
     regions = np.zeros_like(small)
 
@@ -669,13 +639,13 @@ def visualize_spans(name, small, pagemask, spans):
     mask = (regions.max(axis=2) != 0)
 
     display = small.copy()
-    display[mask] = (display[mask]/2) + (regions[mask]/2)
-    display[pagemask == 0] /= 4
+    display[mask] = (display[mask]//2) + (regions[mask]//2)
+    display[pagemask == 0] //= 4
 
-    debug_show(name, 2, 'spans', display)
+    debug_show(2, 'spans', display)
 
 
-def visualize_span_points(name, small, span_points, corners):
+def visualize_span_points(small, span_points, corners):
 
     display = small.copy()
 
@@ -703,7 +673,7 @@ def visualize_span_points(name, small, span_points, corners):
     cv2.polylines(display, [norm2pix(small.shape, corners, True)],
                   True, (255, 255, 255))
 
-    debug_show(name, 3, 'span points', display)
+    debug_show(3, 'span points', display)
 
 
 def imgsize(img):
@@ -728,7 +698,7 @@ def make_keypoint_index(span_counts):
     return keypoint_index
 
 
-def optimize_params(name, small, dstpoints, span_counts, params):
+def optimize_params(small, dstpoints, span_counts, params):
 
     keypoint_index = make_keypoint_index(span_counts)
 
@@ -736,26 +706,26 @@ def optimize_params(name, small, dstpoints, span_counts, params):
         ppts = project_keypoints(pvec, keypoint_index)
         return np.sum((dstpoints - ppts)**2)
 
-    print '  initial objective is', objective(params)
+    print ('  initial objective is', objective(params))
 
     if DEBUG_LEVEL >= 1:
         projpts = project_keypoints(params, keypoint_index)
         display = draw_correspondences(small, dstpoints, projpts)
-        debug_show(name, 4, 'keypoints before', display)
+        debug_show(4, 'keypoints before', display)
 
-    print '  optimizing', len(params), 'parameters...'
+    print ('  optimizing', len(params), 'parameters...')
     start = datetime.datetime.now()
     res = scipy.optimize.minimize(objective, params,
                                   method='Powell')
     end = datetime.datetime.now()
-    print '  optimization took', round((end-start).total_seconds(), 2), 'sec.'
-    print '  final objective is', res.fun
+    print( '  optimization took', round((end-start).total_seconds(), 2), 'sec.')
+    print( '  final objective is', res.fun)
     params = res.x
 
     if DEBUG_LEVEL >= 1:
         projpts = project_keypoints(params, keypoint_index)
         display = draw_correspondences(small, dstpoints, projpts)
-        debug_show(name, 5, 'keypoints after', display)
+        debug_show(5, 'keypoints after', display)
 
     return params
 
@@ -773,12 +743,12 @@ def get_page_dims(corners, rough_dims, params):
     res = scipy.optimize.minimize(objective, dims, method='Powell')
     dims = res.x
 
-    print '  got page dims', dims[0], 'x', dims[1]
+    print ('  got page dims', dims[0], 'x', dims[1])
 
     return dims
 
 
-def remap_image(name, img, small, page_dims, params):
+def remap_image(img, small, page_dims, params):
 
     height = 0.5 * page_dims[1] * OUTPUT_ZOOM * img.shape[0]
     height = round_nearest_multiple(height, REMAP_DECIMATE)
@@ -786,10 +756,10 @@ def remap_image(name, img, small, page_dims, params):
     width = round_nearest_multiple(height * page_dims[0] / page_dims[1],
                                    REMAP_DECIMATE)
 
-    print '  output will be {}x{}'.format(width, height)
+    print ('  output will be {}x{}'.format(width, height))
 
-    height_small = height / REMAP_DECIMATE
-    width_small = width / REMAP_DECIMATE
+    height_small = height // REMAP_DECIMATE
+    width_small = width // REMAP_DECIMATE
 
     page_x_range = np.linspace(0, page_dims[0], width_small)
     page_y_range = np.linspace(0, page_dims[1], height_small)
@@ -822,7 +792,7 @@ def remap_image(name, img, small, page_dims, params):
     thresh = cv2.adaptiveThreshold(remapped, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                    cv2.THRESH_BINARY, ADAPTIVE_WINSZ, 25)
 
-    pil_image = Image.fromarray(thresh)
+    '''pil_image = Image.fromarray(thresh)
     pil_image = pil_image.convert('1')
 
     threshfile = name + '_thresh.png'
@@ -835,55 +805,64 @@ def remap_image(name, img, small, page_dims, params):
                              interpolation=cv2.INTER_AREA)
         debug_show(name, 6, 'output', display)
 
-    return threshfile
+    return threshfile'''
+    return thresh
 
 
-def main():
 
-    if len(sys.argv) < 2:
-        print 'usage:', sys.argv[0], 'IMAGE1 [IMAGE2 ...]'
-        sys.exit(0)
+def imshow(img, title='', gray=True):
+    plt.figure(title, figsize=(10,14))
+    if gray:
+        plt.imshow(img, cmap='gray')
 
-    if DEBUG_LEVEL > 0 and DEBUG_OUTPUT != 'file':
-        cv2.namedWindow(WINDOW_NAME)
+#%%
+if __name__ == '__main__':
+
+    ca()
+
+
+    from  pdf2image import convert_from_path
+    try:
+        images
+    except:
+        images = convert_from_path(r'P:\a\_smusic\bach\12 Little Preludes.pdf')
+
+    img = images[3]
+    nimg = np.array(img)
 
     outfiles = []
 
-    for imgfile in sys.argv[1:]:
-
-        img = cv2.imread(imgfile)
+    for img in [nimg]:
         small = resize_to_screen(img)
-        basename = os.path.basename(imgfile)
-        name, _ = os.path.splitext(basename)
+        #basename = os.path.basename(imgfile)
+        #name, _ = os.path.splitext(basename)
 
-        print 'loaded', basename, 'with size', imgsize(img),
-        print 'and resized to', imgsize(small)
-
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.0, 'original', small)
+        #print('loaded', basename, 'with size', imgsize(img))
+        #print('and resized to', imgsize(small))
 
         pagemask, page_outline = get_page_extents(small)
 
-        cinfo_list = get_contours(name, small, pagemask, 'text')
-        spans = assemble_spans(name, small, pagemask, cinfo_list)
+        cinfo_list = get_contours(small, pagemask, 'text')
+        spans = assemble_spans(small, pagemask, cinfo_list)
 
         if len(spans) < 3:
-            print '  detecting lines because only', len(spans), 'text spans'
-            cinfo_list = get_contours(name, small, pagemask, 'line')
-            spans2 = assemble_spans(name, small, pagemask, cinfo_list)
+            print('  detecting lines because only', len(spans), 'text spans')
+            cinfo_list = get_contours(small, pagemask, 'line')
+            spans2 = assemble_spans(small, pagemask, cinfo_list)
             if len(spans2) > len(spans):
                 spans = spans2
 
         if len(spans) < 1:
-            print 'skipping', name, 'because only', len(spans), 'spans'
+            print('skipping', 'because only', len(spans), 'spans')
             continue
+
 
         span_points = sample_spans(small.shape, spans)
 
-        print '  got', len(spans), 'spans',
-        print 'with', sum([len(pts) for pts in span_points]), 'points.'
+        print('  got', len(spans), 'spans', 'with', sum(
+            [len(pts) for pts in span_points]), 'points.')
 
-        corners, ycoords, xcoords = keypoints_from_samples(name, small,
+        corners, ycoords, xcoords = keypoints_from_samples(small,
                                                            pagemask,
                                                            page_outline,
                                                            span_points)
@@ -894,22 +873,18 @@ def main():
         dstpoints = np.vstack((corners[0].reshape((1, 1, 2)),) +
                               tuple(span_points))
 
-        params = optimize_params(name, small,
+        params = optimize_params(small,
                                  dstpoints,
                                  span_counts, params)
 
         page_dims = get_page_dims(corners, rough_dims, params)
 
-        outfile = remap_image(name, img, small, page_dims, params)
+        outfile = remap_image(img, small, page_dims, params)
+
+        imshow(img)
+        imshow(outfile)
 
         outfiles.append(outfile)
 
-        print '  wrote', outfile
-        print
-
-    print 'to convert to PDF (requires ImageMagick):'
-    print '  convert -compress Group4 ' + ' '.join(outfiles) + ' output.pdf'
-
-
-if __name__ == '__main__':
-    main()
+        print('  wrote', outfile)
+        print()
